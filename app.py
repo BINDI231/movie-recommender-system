@@ -26,43 +26,49 @@ def clean_text_pipeline(text):
     tokens = [w for w in text.split() if w not in STOP_WORDS and len(w) > 1]
     return " ".join(tokens)
 
-@st.cache_data
-def build_recommender():
-    df = pd.read_csv("tmdb_5000_movies.csv")
+@st.cache_resource
+def build_vectorizer():
+    df = pd.read_csv(
+        "tmdb_5000_movies.csv",
+        usecols=["title", "overview", "genres", "keywords", "tagline", "vote_average"]
+    )
     df = df.drop_duplicates(subset="title").reset_index(drop=True)
-    
+
     df["overview"] = df["overview"].fillna("")
     df["tagline"] = df["tagline"].fillna("")
     df["genres_clean"] = df["genres"].apply(extract_names)
     df["keywords_clean"] = df["keywords"].apply(extract_names)
-    
+
     combined = (
         df["overview"] + " " +
         df["genres_clean"] + " " +
         df["keywords_clean"] + " " +
         df["tagline"]
     )
-    df["clean_text"] = combined.apply(clean_text_pipeline)
-    
-    tfidf = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
-    tfidf_matrix = tfidf.fit_transform(df["clean_text"])
-    cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
-    return df, cosine_sim
+    clean_text = combined.apply(clean_text_pipeline)
 
-df, cosine_sim = build_recommender()
+    tfidf = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
+    tfidf_matrix = tfidf.fit_transform(clean_text)
+
+    # Keep only the 3 columns needed for display to save RAM
+    display_df = df[["title", "vote_average", "overview"]].copy()
+    return display_df, tfidf_matrix
+
+df, tfidf_matrix = build_vectorizer()
 
 def recommend(item_name, top_n=5):
     idx = df[df["title"] == item_name].index[0]
-    sim_scores = list(enumerate(cosine_sim[idx]))
-    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1 : top_n + 1]
-    
+    # Compute cosine similarity for ONLY the selected movie (uses <1 MB RAM)
+    sim_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
+    top_indices = sim_scores.argsort()[::-1][1 : top_n + 1]
+
     results = []
-    for movie_idx, score in sim_scores:
+    for movie_idx in top_indices:
         results.append({
             "Movie Title": df.loc[movie_idx, "title"],
             "Rating": df.loc[movie_idx, "vote_average"],
-            "Similarity": f"{score:.2%}",
-            "Overview": df.loc[movie_idx, "overview"][:160] + "..."
+            "Similarity": f"{sim_scores[movie_idx]:.2%}",
+            "Overview": str(df.loc[movie_idx, "overview"])[:160] + "..."
         })
     return pd.DataFrame(results)
 
